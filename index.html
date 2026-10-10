@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Brain Workshop (Web)</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{height:100%}
+body{background:#111;color:#e6e6e6;font-family:-apple-system,system-ui,sans-serif;display:flex;flex-direction:column;overflow:hidden;user-select:none;-webkit-user-select:none;touch-action:manipulation}
+header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;background:#1b1b1b;border-bottom:1px solid #2a2a2a;flex-shrink:0;font-size:14px}
+.title{font-weight:700;color:#9ec5ff}
+.hdr-right{display:flex;gap:14px;align-items:center;color:#aaa}
+.hdr-right b{color:#fff}
+button{font:inherit;cursor:pointer}
+.btn{background:#222;border:1px solid #3a3a3a;color:#eee;border-radius:8px;padding:8px 14px;font-size:14px}
+.btn.primary{background:#2c5fb8;border-color:#2c5fb8;color:#fff;font-weight:600}
+.btn:disabled{opacity:.4;cursor:default}
+.prog{height:3px;background:#222;flex-shrink:0}
+.prog div{height:100%;background:#4f8cff;width:0;transition:width .2s}
+main{flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;padding:12px}
+#grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;width:min(72vh,420px);aspect-ratio:1/1}
+.cell{background:#1d1d1d;border:1px solid #2c2c2c;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#666;font-size:28px;font-weight:700}
+.cell.on{background:#3a6fd8;border-color:#5b8ef0;box-shadow:0 0 18px #3a6fd8aa}
+.cell.center{background:transparent;border-color:transparent}
+#subtitle{font-size:22px;font-weight:700;color:#ffd86b;min-height:30px;text-align:center}
+#status{font-size:14px;color:#aaa;min-height:20px;text-align:center;padding:0 10px}
+#feedback{font-size:15px;font-weight:700;min-height:20px;text-align:center}
+.ok{color:#5fd97a}.bad{color:#ff6b6b}
+.pads{display:flex;gap:12px;width:min(90vw,460px)}
+.pad{flex:1;padding:22px 0;font-size:18px;font-weight:700;border-radius:12px;border:2px solid #3a3a3a;background:#1d1d1d;color:#eee}
+.pad.hit{background:#2c5fb8;border-color:#4f8cff}
+.pad kbd{display:block;font-size:12px;font-weight:400;color:#888;margin-top:4px}
+footer{display:flex;justify-content:center;gap:10px;padding:10px;flex-shrink:0;border-top:1px solid #2a2a2a;background:#1b1b1b}
+.note{font-size:12px;color:#777;text-align:center;padding:0 12px 10px}
+.summary{max-width:460px;text-align:left;line-height:1.6;font-size:15px}
+.summary h2{color:#9ec5ff;font-size:20px;margin-bottom:6px}
+table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+td,th{padding:4px 6px;border-bottom:1px solid #2a2a2a;text-align:left}
+</style>
+</head>
+<body>
+<header>
+  <div class="title">Brain Workshop</div>
+  <div class="hdr-right">
+    <span>N-back <b id="nLevel">2</b></span>
+    <span>Trial <b id="trialNum">0</b>/<span id="trialTotal">0</span></span>
+    <span>Score <b id="score">-</b></span>
+  </div>
+</header>
+<div class="prog"><div id="progress"></div></div>
+
+<main>
+  <div id="grid"></div>
+  <div id="subtitle"></div>
+  <div id="status">Press Start. Match the position (A) and the sound (L) from N steps back.</div>
+  <div id="feedback"></div>
+  <div class="pads">
+    <button class="pad" id="padPos" disabled>Position<kbd>A</kbd></button>
+    <button class="pad" id="padSnd" disabled>Sound<kbd>L</kbd></button>
+  </div>
+  <div id="summary" class="summary" hidden></div>
+</main>
+
+<footer>
+  <button class="btn primary" id="startBtn">Start session</button>
+  <button class="btn" id="stopBtn" disabled>Stop</button>
+  <button class="btn" id="resetBtn">Reset level</button>
+</footer>
+<div class="note">A = position match &nbsp;·&nbsp; L = sound match &nbsp;·&nbsp; Esc = stop. Progress is saved in this browser only.</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Brain Workshop (web) - Dual N-Back, ported from Brain Workshop 2.0 defaults.
+//   3x3 grid, 8 squares (centre excluded), 8 letter sounds (C H K L Q R S T).
+//   Trial length: 30 ticks (3.0 s) for N<=3, 35 ticks for N=4-6, 40 for N=7-9.
+//   Trials per session = 20 + N^2. Guaranteed match chance 1/8 per modality.
+//   Advance at >=80% correct, fall back a level after 3 sessions <50%.
+// ---------------------------------------------------------------------------
+const CFG = {
+  NUM_TRIALS: 20,
+  TICK_MS: 100,
+  GUARANTEED_MATCH: 0.125,
+  THRESHOLD_ADVANCE: 80,
+  THRESHOLD_FALLBACK: 50,
+  FALLBACK_SESSIONS: 3,
+  GAP_MS: 350,           // blank gap between trials
+  FEEDBACK_MS: 350,
+  SAVE_KEY: 'brainworkshop-web-v1',
+};
+const CELLS = [0,1,2,3,5,6,7,8];            // grid index 4 (centre) is unused
+const LETTERS = ['C','H','K','L','Q','R','S','T'];
+const SOUND_FILES = {C:'sounds/c.wav',H:'sounds/h.wav',K:'sounds/k.wav',L:'sounds/l.wav',Q:'sounds/q.wav',R:'sounds/r.wav',S:'sounds/s.wav',T:'sounds/t.wav'};
+const SOUNDS = {};
+for (const L of LETTERS) { SOUNDS[L] = new Audio(SOUND_FILES[L]); SOUNDS[L].preload = 'auto'; }
+
+function ticksFor(n){ return (n >= 7 ? 40 : n >= 4 ? 35 : 30) * CFG.TICK_MS; }
+function trialsFor(n){ return CFG.NUM_TRIALS + n*n; }
+
+// ---- saved state ----------------------------------------------------------
+function loadState(){
+  try { const s = JSON.parse(localStorage.getItem(CFG.SAVE_KEY)); if (s && s.n) return s; } catch(e){}
+  return { n: 2, fallback: 0, sessions: [] };
+}
+let state = loadState();
+function saveState(){ try { localStorage.setItem(CFG.SAVE_KEY, JSON.stringify(state)); } catch(e){} }
+
+// ---- DOM -------------------------------------------------------------------
+const $ = id => document.getElementById(id);
+const gridEl = $('grid');
+for (let i = 0; i < 9; i++){
+  const c = document.createElement('div');
+  c.className = 'cell' + (i === 4 ? ' center' : '');
+  c.textContent = i === 4 ? '+' : '';
+  c.dataset.i = i;
+  gridEl.appendChild(c);
+}
+const cellEls = [...gridEl.querySelectorAll('.cell')];
+
+// ---- session state ---------------------------------------------------------
+let running = false;
+let session = null;   // {n, total, i, hist:[{pos,snd}], cur:{pos,snd}, pressed:{pos,snd}, correct, decisions, ...}
+let timers = [];
+let wakeLock = null;
+
+function later(fn, ms){ const t = setTimeout(fn, ms); timers.push(t); return t; }
+function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+
+function speak(letter){
+  const a = SOUNDS[letter];
+  try { a.currentTime = 0; a.play().catch(()=>{}); } catch(e){}
+}
+
+function showCell(pos){
+  cellEls.forEach((c, i) => c.classList.toggle('on', i === pos));
+}
+
+function setButtons(enabled){
+  $('padPos').disabled = !enabled;
+  $('padSnd').disabled = !enabled;
+  $('padPos').classList.remove('hit');
+  $('padSnd').classList.remove('hit');
+}
+
+function updateHeader(){
+  $('nLevel').textContent = state.n;
+  $('score').textContent = session && session.decisions ? Math.round(100 * session.correct / session.decisions) + '%' : '-';
+}
+
+// ---- trial generation (mirrors generate_stimulus in BW) --------------------
+function genTrial(i){
+  const n = session.n;
+  let pos = CELLS[Math.floor(Math.random()*8)];
+  let snd = LETTERS[Math.floor(Math.random()*8)];
+  if (i >= n){
+    const back = session.hist[i - n];
+    if (Math.random() < CFG.GUARANTEED_MATCH) pos = back.pos;
+    if (Math.random() < CFG.GUARANTEED_MATCH) snd = back.snd;
+  }
+  return { pos, snd };
+}
+
+// ---- trial loop --------------------------------------------------------------
+function startTrial(){
+  const i = session.i;
+  const cur = genTrial(i);
+  session.cur = cur;
+  session.pressed = { pos: false, snd: false };
+  session.hist.push(cur);
+  $('trialNum').textContent = i + 1;
+  $('feedback').textContent = '';
+  $('feedback').className = '';
+  $('progress').style.width = (100 * i / session.total) + '%';
+  showCell(cur.pos);
+  $('subtitle').textContent = cur.snd;
+  speak(cur.snd);
+  setButtons(true);
+  later(endTrial, ticksFor(session.n));
+}
+
+function endTrial(){
+  setButtons(false);
+  showCell(-1);
+  const i = session.i, n = session.n;
+  if (i >= n){
+    const back = session.hist[i - n];
+    const posMatch = back.pos === session.cur.pos;
+    const sndMatch = back.snd === session.cur.snd;
+    const posOk = session.pressed.pos === posMatch;
+    const sndOk = session.pressed.snd === sndMatch;
+    session.decisions += 2;
+    session.correct += (posOk ? 1 : 0) + (sndOk ? 1 : 0);
+    const parts = [];
+    parts.push('Position ' + (posOk ? '✓' : '✗') + (posMatch ? ' (match)' : ''));
+    parts.push('Sound ' + (sndOk ? '✓' : '✗') + (sndMatch ? ' (match)' : ''));
+    $('feedback').textContent = parts.join('   ');
+    $('feedback').className = (posOk && sndOk) ? 'ok' : 'bad';
+  } else {
+    $('feedback').textContent = 'Warm-up: first ' + n + ' trials are not scored';
+    $('feedback').className = '';
+  }
+  updateHeader();
+  session.i++;
+  if (session.i >= session.total){
+    later(finishSession, CFG.FEEDBACK_MS);
+  } else {
+    later(startTrial, CFG.GAP_MS + CFG.FEEDBACK_MS);
+  }
+}
+
+function press(mod){
+  if (!running || !session || !session.cur) return;
+  if (session.pressed[mod]) return;        // one press per modality per trial
+  session.pressed[mod] = true;
+  $(mod === 'pos' ? 'padPos' : 'padSnd').classList.add('hit');
+}
+
+// ---- session control ------------------------------------------------------------
+function startSession(){
+  session = { n: state.n, total: trialsFor(state.n), i: 0, hist: [], cur: null,
+              pressed: {pos:false, snd:false}, correct: 0, decisions: 0 };
+  running = true;
+  $('summary').hidden = true;
+  $('startBtn').disabled = true;
+  $('stopBtn').disabled = false;
+  $('trialTotal').textContent = session.total;
+  $('status').textContent = 'N=' + session.n + ' · ' + session.total + ' trials';
+  requestWake();
+  updateHeader();
+  startTrial();
+}
+
+function stopSession(cancelled = true){
+  if (!running) return;
+  clearTimers();
+  running = false;
+  setButtons(false);
+  showCell(-1);
+  $('subtitle').textContent = '';
+  $('startBtn').disabled = false;
+  $('stopBtn').disabled = true;
+  releaseWake();
+  if (cancelled){
+    $('status').textContent = 'Stopped. Session not counted.';
+    $('progress').style.width = '0%';
+  }
+}
+
+function finishSession(){
+  const pct = session.decisions ? 100 * session.correct / session.decisions : 0;
+  const n = session.n;
+  let note;
+  if (pct >= CFG.THRESHOLD_ADVANCE){
+    state.n = n + 1; state.fallback = 0;
+    note = 'Level up → N=' + state.n;
+  } else if (pct < CFG.THRESHOLD_FALLBACK){
+    state.fallback++;
+    if (state.fallback >= CFG.FALLBACK_SESSIONS){
+      state.n = Math.max(1, n - 1); state.fallback = 0;
+      note = 'Level down → N=' + state.n;
+    } else {
+      note = 'Below ' + CFG.THRESHOLD_FALLBACK + '%. Fallback ' + state.fallback + '/' + CFG.FALLBACK_SESSIONS;
+    }
+  } else {
+    state.fallback = 0;
+    note = 'Stay at N=' + n;
+  }
+  state.sessions.push({ date: new Date().toISOString(), n, score: Math.round(pct), trials: session.total });
+  if (state.sessions.length > 200) state.sessions = state.sessions.slice(-200);
+  saveState();
+
+  const rows = state.sessions.slice(-10).reverse().map(s =>
+    '<tr><td>' + new Date(s.date).toLocaleDateString() + '</td><td>N=' + s.n + '</td><td>' + s.score + '%</td><td>' + s.trials + '</td></tr>').join('');
+  $('summary').innerHTML = '<h2>Session done: ' + Math.round(pct) + '%</h2>' +
+    '<div>' + note + '</div>' +
+    '<table><tr><th>Date</th><th>N</th><th>Score</th><th>Trials</th></tr>' + rows + '</table>';
+  $('summary').hidden = false;
+  $('progress').style.width = '100%';
+  $('status').textContent = 'Session complete.';
+  running = false;
+  clearTimers();
+  setButtons(false);
+  showCell(-1);
+  $('startBtn').disabled = false;
+  $('stopBtn').disabled = true;
+  $('nLevel').textContent = state.n;
+  releaseWake();
+}
+
+// ---- screen wake lock (keeps screen on during a session on phones) ---------------
+async function requestWake(){
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch(e){}
+}
+function releaseWake(){ try { if (wakeLock) wakeLock.release(); } catch(e){} wakeLock = null; }
+
+// ---- wiring ---------------------------------------------------------------------
+$('startBtn').onclick = startSession;
+$('stopBtn').onclick = () => stopSession(true);
+$('resetBtn').onclick = () => {
+  if (running) return;
+  state.n = 2; state.fallback = 0; saveState(); updateHeader();
+  $('status').textContent = 'Level reset to N=2.';
+};
+$('padPos').onclick = () => press('pos');
+$('padSnd').onclick = () => press('snd');
+document.addEventListener('keydown', e => {
+  if (e.repeat) return;
+  const k = e.key.toLowerCase();
+  if (k === 'a') { press('pos'); e.preventDefault(); }
+  else if (k === 'l') { press('snd'); e.preventDefault(); }
+  else if (e.key === 'Escape') stopSession(true);
+});
+updateHeader();
+$('trialTotal').textContent = trialsFor(state.n);
+</script>
+</body>
+</html>
